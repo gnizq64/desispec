@@ -5,7 +5,15 @@ desispec Change Log
 0.20.1 (unreleased)
 -------------------
 
-* No changes yet.
+* Add ability to load Frame without reading Resolution matrix
+* Refactor offline QA to use qaprod_dir more sensibly
+* Include hooks in QA to previous fiberflat file location (calib2d)
+* Inhibit scatter plot in skyredidual QA
+* Pipeline fix to allow redrock to use a full node per healpix (PR `#585`_).
+* Update pipeline maxtime/maxnodes job calculation (PR `#588`_).
+
+.. _`#585`: https://github.com/desihub/desispec/pull/585
+.. _`#588`: https://github.com/desihub/desispec/pull/588
 
 0.20.0 (2018-03-29)
 -------------------

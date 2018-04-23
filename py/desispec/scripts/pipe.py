@@ -500,10 +500,15 @@ Where supported commands are:
         parser.add_argument("--nersc_queue", required=False, default="regular",
             help="write a script for this NERSC queue (debug | regular)")
 
-        parser.add_argument("--nersc_runtime", required=False, type=int,
-            default=30, help="Then maximum run time (in minutes) for a single "
+        parser.add_argument("--nersc_maxtime", required=False, type=int,
+            default=0, help="Then maximum run time (in minutes) for a single "
             " job.  If the list of tasks cannot be run in this time, multiple "
-            " job scripts will be written")
+            " job scripts will be written.  Default is the maximum time for "
+            " the specified queue.")
+
+        parser.add_argument("--nersc_maxnodes", required=False, type=int,
+            default=0, help="The maximum number of nodes to use.  Default "
+            " is the maximum nodes for the specified queue.")
 
         parser.add_argument("--nersc_shifter", required=False, default=None,
             help="The shifter image to use for NERSC jobs")
@@ -579,11 +584,11 @@ Where supported commands are:
                 ppn = hostprops["nodecores"]
 
             joblist = pipe.scriptgen.nersc_job_size(args.tasktype, tasks,
-                args.nersc, args.nersc_queue, args.nersc_runtime, nodeprocs=ppn,
-                db=db)
+                args.nersc, args.nersc_queue, args.nersc_maxtime,
+                args.nersc_maxnodes, nodeprocs=ppn, db=db)
 
             launch="srun -n"
-            for (jobnodes, jobtasks) in joblist:
+            for (jobnodes, jobtime, jobtasks) in joblist:
                 jobprocs = jobnodes * ppn
                 pipe.run.dry_run(args.tasktype, jobtasks, opts, jobprocs,
                     ppn, db=db, launch=launch, force=False)
@@ -642,9 +647,9 @@ Where supported commands are:
 
             scripts = pipe.scriptgen.batch_nersc(tasktype, tasks,
                 outscript, outlog, tasktype, args.nersc, args.nersc_queue,
-                args.nersc_runtime, nodeprocs=ppn, openmp=False,
-                multiproc=False, db=db, shifterimg=args.nersc_shifter,
-                debug=args.debug)
+                args.nersc_maxtime, args.nersc_maxnodes, nodeprocs=ppn,
+                openmp=False, multiproc=False, db=db,
+                shifterimg=args.nersc_shifter, debug=args.debug)
 
         return scripts
 
@@ -678,9 +683,12 @@ Where supported commands are:
 
         tasks = pipe.prod.task_read(args.taskfile)
 
-        scripts = self._gen_scripts(args.tasktype, tasks, args.nodb, args)
-
-        print(",".join(scripts))
+        if len(tasks) > 0:
+            scripts = self._gen_scripts(args.tasktype, tasks, args.nodb, args)
+            print(",".join(scripts))
+        else:
+            import warnings
+            warnings.warn("Input task list is empty", RuntimeWarning)
 
         return
 
@@ -690,10 +698,9 @@ Where supported commands are:
 
         depstr = ""
         if deps is not None:
-            depstr = "-d afterany"
+            depstr = "-d afterok"
             for d in deps:
                 depstr = "{}:{}".format(depstr, d)
-
 
         jobids = list()
         if slurm:
@@ -746,19 +753,20 @@ Where supported commands are:
 
         tasks = pipe.prod.task_read(args.taskfile)
 
-        scripts = self._gen_scripts(args.tasktype, tasks, args.nodb, args)
-
-        deps = None
-        slurm = False
-        if args.nersc is not None:
-            slurm = True
-        if args.depjobs is not None:
-            deps = args.depjobs.split(',')
-
-        jobids = self._run_scripts(scripts, deps=deps, slurm=slurm)
-
-        if len(jobids) > 0:
-            print(",".join(jobids))
+        if len(tasks) > 0:
+            scripts = self._gen_scripts(args.tasktype, tasks, args.nodb, args)
+            deps = None
+            slurm = False
+            if args.nersc is not None:
+                slurm = True
+            if args.depjobs is not None:
+                deps = args.depjobs.split(',')
+            jobids = self._run_scripts(scripts, deps=deps, slurm=slurm)
+            if len(jobids) > 0:
+                print(",".join(jobids))
+        else:
+            import warnings
+            warnings.warn("Input task list is empty", RuntimeWarning)
         return
 
 
@@ -793,7 +801,6 @@ Where supported commands are:
         args = parser.parse_args(sys.argv[2:])
 
         print("Step(s) to run:",args.tasktypes)
-
 
         machprops = None
         if args.nersc is not None:
@@ -835,22 +842,25 @@ Where supported commands are:
         allnights = io.get_nights(strip_path=True)
         nights = pipe.prod.select_nights(allnights, args.nights)
 
-        deps = None
+        outdeps = None
+        indeps = None
         if args.depjobs is not None:
-            deps = args.depjobs.split(',')
+            indeps = args.depjobs.split(',')
 
         for tt in tasktypes:
             # Get the tasks.  We select by state and submitted status.
             tasks = self._get_tasks(db, tt, states, nights)
-            if len(tasks) == 0:
-                continue
 
             if args.nosubmitted:
                 if (tt != "spectra") and (tt != "redshift"):
                     sb = db.get_submitted(tasks)
                     tasks = [ x for x in tasks if not sb[x] ]
-                if len(tasks) == 0:
-                    continue
+
+            if len(tasks) == 0:
+                import warnings
+                warnings.warn("Input task list for '{}' is empty".format(tt),
+                              RuntimeWarning)
+                break
 
             # Generate the scripts
             scripts = self._gen_scripts(tt, tasks, False, args)
@@ -860,12 +870,15 @@ Where supported commands are:
                 if (tt != "spectra") and (tt != "redshift"):
                     db.set_submitted_type(tt, tasks)
 
-            jobids = self._run_scripts(scripts, deps=deps, slurm=slurm)
-            if len(jobids) > 0:
-                deps = jobids
+            outdeps = self._run_scripts(scripts, deps=indeps, slurm=slurm)
+            if len(outdeps) > 0:
+                indeps = outdeps
+            else:
+                indeps = None
 
-        if deps is not None and len(deps) > 0:
-            print(",".join(deps))
+        if outdeps is not None and len(outdeps) > 0:
+            print(",".join(outdeps))
+
         return
 
 
@@ -1110,7 +1123,7 @@ Where supported commands are:
                         cmd = "select submitted from {}".format(t)
                         cur.execute(cmd)
                         isub = [ int(x[0]) for x in cur.fetchall() ]
-                        tasksub[t] = np.sum(isub)
+                        tasksub[t] = np.sum(isub).astype(int)
             if clear:
                 print("\033c")
             print(header)
